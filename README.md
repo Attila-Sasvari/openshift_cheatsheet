@@ -1,8 +1,35 @@
 # OpenShift Cheatsheet
 
+## Table of Contents
+
+* [Authentication](#authentication)
+  - [Podman](#podman-login)
+  - [OpenShift](#openshift-login)
+* [Container Tools](#container-tools)
+  - [Podman commands](#podman-commands)
+  - [Skopeo commands](#skopeo-commands)
+* [Images](#images)
+  - [Import Image](#import-image)
+  - [Internal Image Registry](#internal-image-registry)
+  - [S2I - Source to Image](#s2i---source-to-image)
+* [Templates](#templates)
+* [New App](#new-app)
+* [Config Map](#config-map)
+* [Secret](#secret)
+* [Build Hooks](#build-hooks)
+* [Copy Files](#copy-files)
+* [Expose Service](#expose-service)
+* [Routes](#routes)
+* [Set Env](#set-env)
+* [Run Command Inside a Pod](#run-command-inside-a-pod)
+* [Rollout](#rollout)
+* [Triggers](#triggers)
+* [Probes](#probes)
+* [Accessing Data](#accessing-data)
+
 ## Authentication
 
-### Podman
+### Podman login
 
 ```bash
 # login with podman
@@ -14,7 +41,7 @@ podman logout quay.io
 
 After successful authentication, Podman stores an access token in the `/run/user/UID/containers/auth.json` file. The /run/user/UID path prefix is not fixed and comes from the `XDG_RUNTIME_DIR` environment variable.
 
-### OpenShift
+### OpenShift login
 
 ```bash
 # login with oc
@@ -42,7 +69,14 @@ oc secrets link default secret_name --for pull
 oc secrets link builder secret_name
 ```
 
-## Podman Commands
+
+
+
+
+
+## Container Tools
+
+### Podman Commands
 
 ```bash
 # login to an image registry
@@ -82,7 +116,7 @@ podman rm sleep
 podman rmi -a --force
 ```
 
-## Skopeo Commands
+### Skopeo Commands
 
 ```bash
 # options: oci | docker | containers-storage
@@ -110,17 +144,114 @@ skopeo delete \
   docker://quay.io/${RHT_OCP4_QUAY_USER}/ubi-sleep:1.0
 ```
 
-## Routes
+## Images
+
+### Import Image
 
 ```bash
-# find route of the console
-oc get route -n openshift-console
+oc import-image <image name> \
+  --from=docker.io/<imagerepo>/<imagename> --all --confirm
+```
+
+### Internal Image Registry
+
+```bash
+# get the OpenShift token as a password
+TOKEN=$(oc whoami -t)
 
 # find route of the internal image registry
 oc get route -n openshift-image-registry
+
+# login to the registry
+podman login -u myuser -p ${TOKEN} \
+  default-route-openshift-image-registry.domain.example.com
+
+# inspect an image with credential
+skopeo inspect --creds=myuser:${TOKEN} \
+  docker://default-route-openshift-image-registry.domain.example.com/myproj/myapp
+
+# inspect an image without TLS certification
+skopeo inspect --tls-verify=false \
+  docker://default-route-openshift-image-registry.domain.example.com/myproj/myapp
+
+# add a user a local role to be able to pull image
+# roles: registry-viewer | registry-editor | system:image-pusher | system:image-puller
+oc policy add-role-to-user system:image-puller \
+  user_name -n project_name
+
+# cluster role
+oc adm policy add-cluster-role-to-user <role> <username>
+
+# details of an image stream in a given namespace
+oc describe is php -n openshift
+
+# allow containers run with root user inside openshift
+oc adm policy add-scc-to-user anyuid -z default
+
 ```
 
-## Config map
+### S2I - Source to Image
+
+## Templates
+
+```bash
+oc new-app --file mytemplate.yaml -p PARAM1=value1 \
+  -p PARAM2=value2
+
+oc process -f mytemplate.yaml -p PARAM1=value1 \
+  -p PARAM2=value2 > myresourcelist.yaml
+
+# list of available templates generally
+oc get templates -n openshift
+
+oc export is,bc,dc,svc,route --as-template > mytemplate.yml
+
+oc export all --as-template=<template_name>
+
+oc create -f some_template.json
+oc create -f myresourcelist.yaml
+
+oc process -f mytemplate.yaml --parameters
+
+oc describe template some_template -n ${USER}-common
+# e.g., describe svc gives back the parameters, the endpoint IP
+
+# list parameters
+oc process --parameters=true -n openshift mysql-persistent
+
+# create template to json
+oc new-app -o json openshift/hello-openshift > hello.json
+
+# validate a template
+oc create --dry-run --validate -f openshift/template/tomcat6-docker-buildconfig.yaml
+```
+
+Red Hat recommends using the oc new-app command rather than the oc process command.
+
+## New App
+
+```bash
+oc new-app --name greet \
+  --build-env npm_config_registry=\
+  http://${RHT_OCP4_NEXUS_SERVER}/repository/nodejs \
+  nodejs:12~https://github.com/${RHT_OCP4_GITHUB_USER}/DO288-apps#source-build \
+  --context-dir nodejs-helloworld
+
+oc new-app --as-deployment-config --name quip \
+  --build-env MAVEN_MIRROR_URL=http://${RHT_OCP4_NEXUS_SERVER}/repository/java \
+  -i redhat-openjdk18-openshift:1.5 --context-dir quip \
+  https://github.com/${RHT_OCP4_GITHUB_USER}/DO288-apps#app-deploy
+
+
+oc new-app --name sleep \
+  --docker-image quay.io/${RHT_OCP4_QUAY_USER}/ubi-sleep:1.0
+
+oc new-app --template=mysql-ephemeral \
+  --param=MYSQL_USER=mysqluser,MYSQL_PASSWORD=redhat,MYSQL_DATABASE=mydb,DATABASE_SERVICE_NAME=database
+```
+
+
+## Config Map
 
 ```bash
 # create configmap from key-value pairs
@@ -159,7 +290,7 @@ oc set volume deployment/mydcname --add \
   --name myvol --configmap-name myconf
 ```
 
-## Secrets
+## Secret
 
 ```bash
 # create configmap from key-value pairs
@@ -213,153 +344,8 @@ oc create secret generic sshsecret \
   --from-file=ssh-privatekey=$HOME/.ssh/id_rsa
 ```
 
-## json path examples
 
-```bash
-REGISTRY=$(oc get routes -n default docker-registry -o jsonpath='{.spec.host}')
-
-http://$(oc get route nexus3 --template='{{ .spec.host }}')
-```
-
-## Internal image repository
-
-```bash
-# get the OpenShift token as a password
-TOKEN=$(oc whoami -t)
-
-# find route of the internal image registry
-oc get route -n openshift-image-registry
-
-# login to the registry
-podman login -u myuser -p ${TOKEN} \
-  default-route-openshift-image-registry.domain.example.com
-
-# inspect an image with credential
-skopeo inspect --creds=myuser:${TOKEN} \
-  docker://default-route-openshift-image-registry.domain.example.com/myproj/myapp
-
-# inspect an image without TLS certification
-skopeo inspect --tls-verify=false \
-  docker://default-route-openshift-image-registry.domain.example.com/myproj/myapp
-
-# add a user a local role to be able to pull image
-# roles: registry-viewer | registry-editor | system:image-pusher | system:image-puller
-oc policy add-role-to-user system:image-puller \
-  user_name -n project_name
-
-# cluster role
-oc adm policy add-cluster-role-to-user <role> <username>
-
-# details of an image stream in a given namespace
-oc describe is php -n openshift
-
-# allow containers run with root user inside openshift
-oc adm policy add-scc-to-user anyuid -z default
-
-```
-
-## Copy file between the container and local machine
-
-```bash
-# Copy file from the container
-oc cp container_name:/var/log/some_path /tmp/local_path
-
-oc rsync /home/user/source devpod1234:/src
-
-oc rsync devpod1234:/src /home/user/source
-```
-
-## Run command inside a pod
-
-```bash
-# one time command
-oc rsh container_name-1-zvjhb ps ax
-
-# interactive shell
-oc rsh -t container_name-1-zvjhb
-
-oc rsh quotesapi-7d76ff58f8-6j2gx bash -c \
-  'echo > /dev/tcp/$DATABASE_SERVICE_NAME/3306 && echo OK || echo FAIL'
-```
-
-## Templates
-
-```bash
-oc new-app --file mytemplate.yaml -p PARAM1=value1 \
-  -p PARAM2=value2
-
-oc process -f mytemplate.yaml -p PARAM1=value1 \
-  -p PARAM2=value2 > myresourcelist.yaml
-
-# list of available templates generally
-oc get templates -n openshift
-
-oc create -f some_template.json
-oc create -f myresourcelist.yaml
-
-oc process -f mytemplate.yaml --parameters
-
-oc describe template some_template -n ${USER}-common
-# e.g., describe svc gives back the parameters, the endpoint IP
-
-# list parameters
-oc process --parameters=true -n openshift mysql-persistent
-
-# create template to json
-oc new-app -o json openshift/hello-openshift > hello.json
-
-# validate a template
-oc create --dry-run --validate -f openshift/template/tomcat6-docker-buildconfig.yaml
-```
-
-Red Hat recommends using the oc new-app command rather than the oc process command.
-
-
-## New app
-
-```bash
-oc new-app --name greet \
-  --build-env npm_config_registry=\
-  http://${RHT_OCP4_NEXUS_SERVER}/repository/nodejs \
-  nodejs:12~https://github.com/${RHT_OCP4_GITHUB_USER}/DO288-apps#source-build \
-  --context-dir nodejs-helloworld
-
-oc new-app --as-deployment-config --name quip \
-  --build-env MAVEN_MIRROR_URL=http://${RHT_OCP4_NEXUS_SERVER}/repository/java \
-  -i redhat-openjdk18-openshift:1.5 --context-dir quip \
-  https://github.com/${RHT_OCP4_GITHUB_USER}/DO288-apps#app-deploy
-
-
-oc new-app --name sleep \
-  --docker-image quay.io/${RHT_OCP4_QUAY_USER}/ubi-sleep:1.0
-
-oc new-app --template=mysql-ephemeral \
-  --param=MYSQL_USER=mysqluser,MYSQL_PASSWORD=redhat,MYSQL_DATABASE=mydb,DATABASE_SERVICE_NAME=database
-```
-
-## Expose Service
-
-```bash
-oc create service externalname myservice \
-  --external-name myhost.example.com
-```
-
-## Triggers
-
-```bash
-# set triiger to build config
-oc set triggers bc/name --from-image=project/image:tag
-
-# to remove a trigger
-oc set triggers bc/name --from-image=project/image:tag --remove
-
-# other values: --from-bitbucket | --from-github
-oc set triggers bc/name --from-gitlab
-
-oc set triggers bc/name --from-gitlab --remove
-```
-
-## Build hook
+## Build Hooks
 
 ```bash
 oc set build-hook bc/name --post-commit \
@@ -375,6 +361,36 @@ oc set env bc/hook --list
 oc start-build bc/hook -F
 ```
 
+
+## Copy Files
+
+```bash
+# Copy file from the container
+oc cp container_name:/var/log/some_path /tmp/local_path
+
+oc rsync /home/user/source devpod1234:/src
+
+oc rsync devpod1234:/src /home/user/source
+```
+
+## Expose Service
+
+```bash
+oc create service externalname myservice \
+  --external-name myhost.example.com
+```
+
+
+## Routes
+
+```bash
+# find route of the console
+oc get route -n openshift-console
+
+# find route of the internal image registry
+oc get route -n openshift-image-registry
+```
+
 ## Set Env
 
 ```bash
@@ -384,6 +400,45 @@ oc env dc/registry --overwrite STORAGE=/opt
 # remove env variables
 oc env dc/d1 ENV1- ENV2-
 oc env rc --all ENV-
+```
+
+
+## Run Command Inside a Pod
+
+```bash
+# one time command
+oc rsh container_name-1-zvjhb ps ax
+
+# interactive shell
+oc rsh -t container_name-1-zvjhb
+
+oc rsh quotesapi-7d76ff58f8-6j2gx bash -c \
+  'echo > /dev/tcp/$DATABASE_SERVICE_NAME/3306 && echo OK || echo FAIL'
+```
+
+## Rollout
+
+```bash
+oc rollout latest dc/mysql
+
+oc rollout pause dc <dc name>
+
+oc rollout resume dc <dc name>
+```
+
+## Triggers
+
+```bash
+# set triiger to build config
+oc set triggers bc/name --from-image=project/image:tag
+
+# to remove a trigger
+oc set triggers bc/name --from-image=project/image:tag --remove
+
+# other values: --from-bitbucket | --from-github
+oc set triggers bc/name --from-gitlab
+
+oc set triggers bc/name --from-gitlab --remove
 ```
 
 ## Probes
@@ -421,27 +476,10 @@ oc set probe dc/registry --remove --readiness --liveness
 oc set probe dc/registry --liveness -- echo ok
 ```
 
-## Rollout
+## Accessing Data
 
 ```bash
-oc rollout latest dc/mysql
+REGISTRY=$(oc get routes -n default docker-registry -o jsonpath='{.spec.host}')
 
-oc rollout pause dc <dc name>
-
-oc rollout resume dc <dc name>
-```
-
-## Export
-
-```bash
-oc export is,bc,dc,svc,route --as-template > mytemplate.yml
-
-oc export all --as-template=<template_name>
-```
-
-## Import image
-
-```bash
-oc import-image <image name> --from=docker.io/<imagerepo>/<imagename> --all --confirm
-
+http://$(oc get route nexus3 --template='{{ .spec.host }}')
 ```
