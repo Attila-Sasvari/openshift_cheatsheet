@@ -28,7 +28,7 @@
 * [Triggers](#triggers)
 * [Probes](#probes)
 * [Events](#events)
-* [adm](#adm)
+* [OpenShift Administration](#openshift-administration)
 * [Accessing Data](#accessing-data)
 
 ## Authentication
@@ -43,7 +43,7 @@ podman login quay.io -u ${USER}
 podman logout quay.io
 ```
 
-After successful authentication, Podman stores an access token in the `/run/user/UID/containers/auth.json` file. The /run/user/UID path prefix is not fixed and comes from the `XDG_RUNTIME_DIR` environment variable.
+After successful authentication, Podman stores an access token in the `/run/user/UID/containers/auth.json` file. The `/run/user/UID` path prefix is not fixed and comes from the `XDG_RUNTIME_DIR` environment variable.
 
 ### OpenShift login
 
@@ -55,17 +55,13 @@ oc login -u ${USER} -p ${PASSWORD} ${OCP4_MASTER_API}
 oc login --username=${USER} --insecure-skip-tls-verify --server=${OCP4_MASTER_API}
 ```
 
-It is possible to create a secret based on the podman login information.
+It is possible to create a secret based on the podman login information, then link to internal service accounts.
 
 ```bash
 oc create secret generic secret_name \
   --from-file .dockerconfigjson=${XDG_RUNTIME_DIR}/containers/auth.json \
   --type kubernetes.io/dockerconfigjson
-```
 
-Then link to internal service accounts.
-
-```bash
 # to pull image
 oc secrets link default secret_name --for pull
 
@@ -73,7 +69,8 @@ oc secrets link default secret_name --for pull
 oc secrets link builder secret_name
 ```
 
-The OpenShift installer creates an auth directory containing the kubeconfig and kubeadmin password files. Run the oc login command to connect to the cluster with the kubeadmin user.
+The OpenShift installer creates an auth directory containing the `kubeconfig` and `kubeadmin` password files. Run the `oc login command` to connect to the cluster with the kubeadmin user.
+
 The password of the kubeadmin user is in the kubeadmin-password file.
 
 ```bash
@@ -92,29 +89,18 @@ podman login quay.io -u ${USER}
 # see locally available images
 podman images
 
+# get formatted list in a table format
 podman images \
   --format "table {{.ID}} {{.Repository}} {{.Tag}}"
 
 # search for a specific image in a registry
 podman search quay.io/ubi-sleep
 
+# pull an image
 podman pull rhel
 
-podman port -l
-
+# create an image
 podman run ubi8/ubi:8.3 echo 'Hello world!'
-
-podman exec -it mysql-basic /bin/bash
-
-podman exec -l cat /etc/hostname
-
-podman restart my-httpd-container
-
-# get the list of local containers
-podman ps
-podman ps --format "{{.ID}} {{.Image}} {{.Names}}"
-podman ps \
- --format="table {{.ID}} {{.Names}} {{.Image}} {{.Status}}"
 
 # build an image from a containerfile
 podman build --layers=false -t do288-apache ./container-build
@@ -128,15 +114,34 @@ podman run -d --name some-container \
 podman run -d --name apache1 -p 8080:80 \
   registry.redhat.io/rhel8/httpd-24
 
+# port forward to a container
 oc port-forward mysql-openshift-1-glqrp 3306:3306
 
+# list the ports of the last used container
+podman port -l
+
+# open an interactive shell to a container
+podman exec -it mysql-basic /bin/bash
+
+# run a command in the container using the last one
+podman exec -l cat /etc/hostname
+
+# get the list of running containers
+podman ps
+podman ps --format "{{.ID}} {{.Image}} {{.Names}}"
+podman ps --format="table {{.ID}} {{.Names}} {{.Image}} {{.Status}}"
+
+# create tar file locally from an image
 podman save \
   -o mysql.tar registry.redhat.io/rhel8/mysql-80
 
+# load back an image from a tar file
 podman load -i mysql.tar
 
+# check the modifications of an image
 podman diff mysql-basic
 
+# commit the changes
 podman commit mysql-basic mysql-custom
 
 # tag a local image
@@ -146,10 +151,13 @@ podman tag do288-apache quay.io/${USER}/do288-apache
 podman push quay.io/${USER}/do288-apache
 
 # see the logs of a container
-podman logs sleep
+podman logs my-httpd-container
 
 # stop a container
-podman stop sleep
+podman stop my-httpd-container
+
+# stop and start a container
+podman restart my-httpd-container
 
 # remove a container
 podman rm sleep
@@ -162,10 +170,8 @@ mkdir /home/student/dbfiles
 # provides a session to execute commands within the same user namespace
 # as the process running inside the container
 podman unshare chown -R 27:27 /home/student/dbfiles
-
 sudo semanage fcontext -a -t container_file_t
   '/home/student/dbfiles(/.*)?'
-
 sudo restorecon -Rv /home/student/dbfiles
 
 # mount a volume
@@ -180,7 +186,6 @@ registries = ["registry.access.redhat.com", "quay.io"]
 
 [registries.insecure]
 registries = ['localhost:5000']
-
 ```
 
 ### Skopeo Commands
@@ -689,7 +694,7 @@ oc set probe dc/registry --liveness -- echo ok
 oc get events
 ```
 
-## adm
+## OpenShift Administration
 
 ```bash
 oc get nodes
@@ -735,6 +740,8 @@ oc get pod --loglevel 10
 ```
 
 ## Accessing Data
+
+Here are some random examples.
 
 ```bash
 
