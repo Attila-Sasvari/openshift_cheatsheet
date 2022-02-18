@@ -20,11 +20,15 @@
 * [Copy Files](#copy-files)
 * [Expose Service](#expose-service)
 * [Routes](#routes)
+* [Persistent Volume Claims](#persistent-volume-claims)
 * [Set Env](#set-env)
 * [Run Command Inside a Pod](#run-command-inside-a-pod)
+* [Scale Deployment](#scale-deployment)
 * [Rollout](#rollout)
 * [Triggers](#triggers)
 * [Probes](#probes)
+* [Events](#events)
+* [adm](#adm)
 * [Accessing Data](#accessing-data)
 
 ## Authentication
@@ -69,6 +73,12 @@ oc secrets link default secret_name --for pull
 oc secrets link builder secret_name
 ```
 
+The OpenShift installer creates an auth directory containing the kubeconfig and kubeadmin password files. Run the oc login command to connect to the cluster with the kubeadmin user.
+The password of the kubeadmin user is in the kubeadmin-password file.
+
+```bash
+oc login -u kubeadmin -p ${PASSWORD} ${OCP4_MASTER_API}:6443
+```
 
 
 ## Container Tools
@@ -82,23 +92,58 @@ podman login quay.io -u ${USER}
 # see locally available images
 podman images
 
+podman images \
+  --format "table {{.ID}} {{.Repository}} {{.Tag}}"
+
 # search for a specific image in a registry
 podman search quay.io/ubi-sleep
 
+podman pull rhel
+
+podman port -l
+
+podman run ubi8/ubi:8.3 echo 'Hello world!'
+
+podman exec -it mysql-basic /bin/bash
+
+podman exec -l cat /etc/hostname
+
+podman restart my-httpd-container
+
 # get the list of local containers
 podman ps
+podman ps --format "{{.ID}} {{.Image}} {{.Names}}"
+podman ps \
+ --format="table {{.ID}} {{.Names}} {{.Image}} {{.Status}}"
 
 # build an image from a containerfile
 podman build --layers=false -t do288-apache ./container-build
+
+# run a container in the background
+podman run -d --name some-container \
+  -e SOME_PARAM=value \
+  quay.io/${USER}/ubi-sleep:1.0
+
+# example to port forwarding
+podman run -d --name apache1 -p 8080:80 \
+  registry.redhat.io/rhel8/httpd-24
+
+oc port-forward mysql-openshift-1-glqrp 3306:3306
+
+podman save \
+  -o mysql.tar registry.redhat.io/rhel8/mysql-80
+
+podman load -i mysql.tar
+
+podman diff mysql-basic
+
+podman commit mysql-basic mysql-custom
 
 # tag a local image
 podman tag do288-apache quay.io/${USER}/do288-apache
 
 # push a local image to a registry
 podman push quay.io/${USER}/do288-apache
-
-# run a container in the background
-podman run -d --name sleep quay.io/${USER}/ubi-sleep:1.0
 
 # see the logs of a container
 podman logs sleep
@@ -111,6 +156,31 @@ podman rm sleep
 
 # remove image even if there is a corresponding container
 podman rmi -a --force
+
+# if a volume to be added
+mkdir /home/student/dbfiles
+# provides a session to execute commands within the same user namespace
+# as the process running inside the container
+podman unshare chown -R 27:27 /home/student/dbfiles
+
+sudo semanage fcontext -a -t container_file_t
+  '/home/student/dbfiles(/.*)?'
+
+sudo restorecon -Rv /home/student/dbfiles
+
+# mount a volume
+podman run -v /home/student/dbfiles:/var/lib/mysql rhmap47/mysql
+```
+
+Registries can be defined for Podman in `/etc/containers/registries.conf`, which has content like:
+
+```bash
+[registries.search]
+registries = ["registry.access.redhat.com", "quay.io"]
+
+[registries.insecure]
+registries = ['localhost:5000']
+
 ```
 
 ### Skopeo Commands
@@ -169,6 +239,9 @@ TOKEN=$(oc whoami -t)
 # find route of the internal image registry
 oc get route -n openshift-image-registry
 
+# available image streams
+oc get is -n openshift
+
 # login to the registry
 podman login -u ${USER} -p ${TOKEN} \
   default-route-openshift-image-registry.domain.example.com
@@ -218,7 +291,7 @@ oc process -f mytemplate.yaml -p PARAM1=value1 \
   -p PARAM2=value2 | oc create -f -
 
 # list of available templates generally
-oc get templates -n openshift
+oc get templates -n openshift -o yaml
 
 # create template file so it can be edited
 oc export is,bc,dc,svc,route --as-template > mytemplate.yml
@@ -277,8 +350,10 @@ oc new-app \
 
 # delete everything of an app by specifying a label
 oc delete all -l db=mysql
-```
 
+# get more details about pods, like IP
+oc get pods -o wide
+```
 
 ## Config Map
 
@@ -359,18 +434,31 @@ oc secrets link default registrycreds --for pull
 # to access an S2I builder image
 oc secrets link builder registrycreds
 
-# set environment var from secret
+# set environment var from secret with prefix
 oc set env deployment/mydcname \
-  --from secret/mysecret
+  --from secret/mysecret --prefix MYSQL_
 
 # set secret values as a volume
 oc set volume deployment/mydcname --add \
-  -t secret -m /path/to/mount/volume \
+  --type secret --mount-path /path/to/mount/volume \
   --name myvol --secret-name mysecret
 
 # create ssh secret
-oc create secret generic sshsecret \
-  --from-file=ssh-privatekey=$HOME/.ssh/id_rsa
+oc create secret generic ssh-keys \
+  --from-file id_rsa=/path-to/id_rsa \
+  --from-file id_rsa.pub=/path-to/id_rsa.pub
+
+# create TLS secret
+oc create secret tls secret-tls \
+  --cert /path-to-certificate --key /path-to-key
+
+# update a secret
+oc extract secret/htpasswd-ppklq -n openshift-config \
+  --to /tmp/ --confirm
+# then make the update
+# finally set again the secret
+oc set data secret/htpasswd-ppklq -n openshift-config \
+  --from-file /tmp/htpasswd
 ```
 
 
@@ -396,14 +484,15 @@ oc policy add-role-to-group system:image-puller \
 
 ## Build Hooks
 
+The post-commit build hook runs commands in a temporary container before pushing the new container image generated by the build to the registry.
+
 ```bash
+# add a command after --
 oc set build-hook bc/name --post-commit \
   --command -- bundle exec rake test --verbose
 
 oc set build-hook bc/name --post-commit \
   --script="curl http://api.com/user/${USER}"
-
-oc set env bc/hook DEVELOPER="Your Name"
 
 oc set env bc/hook --list
 
@@ -427,12 +516,19 @@ oc rsync <container_name>:/src /home/user/source
 ## Expose Service
 
 ```bash
-
 oc expose svc/greet
 
 # to use an external service inside the cluster
 oc create service externalname myservice \
   --external-name myhost.example.com
+
+# some further parameters to know
+# --hostname
+# --port: the port that the resource should serve on
+# --target-port: on the container
+# --name
+# --protocol
+# --type, e.g. LoadBalancer, ClusterIP
 ```
 
 
@@ -444,17 +540,41 @@ oc get route -n openshift-console
 
 # find route of the internal image registry
 oc get route -n openshift-image-registry
+
+# by default, router is deployed in openshift-ingress project
+oc get pod --all-namespaces -l app=router
+```
+
+## Persistent Volume Claims
+
+```bash
+# see available storage classes
+oc get storageclass
+
+oc set volumes deployment/example-application \
+  --add --name example-storage --type pvc --claim-class nfs-storage \
+  --claim-mode rwo --claim-size 15Gi --mount-path /var/lib/example-app \
+  --claim-name example-storage
+
+oc set volumes \
+  deployment/postgresql-persistent2 \
+  --add --name postgresql-storage --type pvc \
+  --claim-name postgresql-storage --mount-path /var/lib/pgsql
+
+oc get pvc
+
+oc delete pvc/example-pvc-storage
 ```
 
 ## Set Env
 
 ```bash
-oc env dc/registry STORAGE=/data
-oc env dc/registry --overwrite STORAGE=/opt
+oc set env dc/registry STORAGE=/data
+oc set env dc/registry --overwrite STORAGE=/opt
 
 # remove env variables
-oc env dc/d1 ENV1- ENV2-
-oc env rc --all ENV-
+oc set env dc/d1 ENV1- ENV2-
+oc set env rc --all ENV-
 ```
 
 
@@ -473,6 +593,19 @@ oc rsh container_name-1-id bash -c \
 
 # get env variables of a pod
 oc rsh container_name-1-id env
+```
+
+## Scale Deployment
+
+```bash
+# scale replices to a specific number
+oc scale --replicas 5 deployment/scale
+
+# create a horizontal pod autoscaler
+oc autoscale dc/hello --min 1 --max 10 --cpu-percent 80
+
+# get information about horizontal pod autoscaler resources in the current project
+oc get hpa
 ```
 
 ## Rollout
@@ -550,9 +683,63 @@ oc set probe dc/registry --remove --readiness --liveness
 oc set probe dc/registry --liveness -- echo ok
 ```
 
+## Events
+
+```bash
+oc get events
+```
+
+## adm
+
+```bash
+oc get nodes
+oc describe node my-node-name
+
+oc adm node-logs -u crio my-node-name
+oc adm node-logs my-node-name
+
+
+# displays the current CPU and memory usage of each node
+oc adm top nodes
+
+# retrieve the cluster version and its details
+oc get clusterversion
+oc describe clusterversion
+
+# retrieve the list of all cluster operators with their status
+oc get clusteroperators
+```
+
+Debug
+
+```bash
+# debug a node
+oc debug node/my-node-name
+...output omitted...
+sh-4.2# chroot /host
+sh-4.2# systemctl is-active kubelet
+active
+sh-4.2# systemctl status kubelet
+sh-4.2# systemctl status cri-o
+# get low-level information about all local containers running on the node
+sh-4.2# crictl ps
+
+# debug a deployment
+oc debug deployment/my-deployment-name --as-root
+```
+
+Select loglevel
+
+```bash
+oc get pod --loglevel 10
+```
+
 ## Accessing Data
 
 ```bash
+
+oc get route -o jsonpath='{..spec.host}{"\n"}'
+
 REGISTRY=$(oc get routes -n default docker-registry -o jsonpath='{.spec.host}')
 
 http://$(oc get route nexus3 --template='{{ .spec.host }}')
