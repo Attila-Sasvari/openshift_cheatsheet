@@ -276,6 +276,82 @@ oc adm policy add-scc-to-user anyuid -z default
 
 ### S2I - Source to Image
 
+```bash
+# check where the s2i scripts are, e.g., "io.openshift.s2i.scripts-url": "image:///usr/libexec/s2i"
+skopeo inspect \
+  docker://myregistry.example.com/rhscl/php-73-rhel7 \
+  | grep io.openshift.s2i.scripts-url
+
+# an assemble or run scripts can be written is .s2i/bin folder
+```
+
+The assemble script can be referenced in .sh script as `/usr/libexec/s2i/assemble`.
+The run script must use exec to invoke it: `exec /usr/libexec/s2i/run`.
+
+The save-artifacts script ensures that dependent artifacts (libraries and components required for the application) are saved for future builds.
+The save-artifacts script output should only include the tar stream output, and nothing else. You should redirect output of other commands in the script to /dev/null.
+
+```bash
+# install package
+sudo yum install source-to-image
+
+# check version of s2i
+s2i version
+
+# create s2i directory
+s2i create <image_name> <directory>
+
+# creates directory like this
+directory
+├── Dockerfile
+├── Makefile
+├── README.md
+├── s2i
+│ └── bin
+│ ├── assemble
+│ ├── run
+│ ├── save-artifacts
+│ └── usage
+└── test
+ ├── run
+ └── test-app
+ └── index.html
+
+# the Dockerfile is to have a COPY instruction to copy
+# ./,s2i/bin/ to /user/lebexex/s2i or whatever skope inspect says
+
+# also add LABELs, like
+LABEL io.k8s.description="A basic Apache HTTP Server S2I builder image" \
+  io.k8s.display-name="Apache HTTP Server S2I builder image for DO288" \
+  io.openshift.expose-services="8080:http" \
+  io.openshift.s2i.scripts-url="image:///usr/libexec/s2i" \
+  io.openshift.tags="builder, httpd, httpd24"
+
+# once updated, build the image.
+# format docker only needed when ONBUILD instruction is used in Dockerfile
+podman build -t builder_image --format docker .
+
+# then build an app container with s2i
+s2i build <src> <builder_image> <tag_name> --as-docker-file /path/to/Dockerfile
+# Dockerfile should include the s2i scripts
+
+# build locally from the Dockerfile
+podman build -t nginx-test /path/to/Dockerfile
+# run with a different random user
+podman run -u 1234 -d -p 8080:8080 nginx-test
+
+# copy to the image registry
+skopeo copy \
+  containers-storage:localhost/s2i-do288-httpd \
+  docker://quay.io/${QUAY_USER}/s2i-do288-httpd
+
+# then create secret from .dockerconfigjson
+# then oc secrets link builder <registry>
+# then import-image
+# verify with oc get is
+# finally create new app
+```
+
 ## Templates
 
 ```bash
