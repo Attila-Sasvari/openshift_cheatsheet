@@ -13,6 +13,8 @@
   - [Internal Image Registry](#internal-image-registry)
   - [S2I - Source to Image](#s2i---source-to-image)
 * [Templates](#templates)
+  - [Helm Chart](#helm-chart)
+  - [Kustomize](#kustomize)
 * [New App](#new-app)
 * [Config Map](#config-map)
 * [Secret](#secret)
@@ -205,7 +207,7 @@ skopeo copy --dest-tls-verify=false \
 skopeo copy --src-creds=user:password \
   --dest-creds=user1:password \
   docker://srcregistry.domain.com/org1/private \
-  docker://dstegistry.domain2.com/org2/private
+  docker://dstregistry.domain2.com/org2/private
 
 # copy from OCI-formatted folder
 skopeo copy oci:/home/user/myimage \
@@ -318,7 +320,7 @@ directory
  └── index.html
 
 # the Dockerfile is to have a COPY instruction to copy
-# ./,s2i/bin/ to /user/lebexex/s2i or whatever skope inspect says
+# ./.s2i/bin/ to /user/libexec/s2i or whatever skope inspect says
 
 # also add LABELs, like
 LABEL io.k8s.description="A basic Apache HTTP Server S2I builder image" \
@@ -395,6 +397,105 @@ oc create --dry-run --validate -f openshift/template/some-buildconfig.yaml
 ```
 
 Red Hat recommends using the oc new-app command rather than the oc process command.
+
+### Helm Chart
+
+```bash
+# create helm directory structure
+helm create <name>
+tree .
+├── charts
+├── Chart.yaml
+├── templates
+│   ├── deployment.yaml
+│   ├── _helpers.tpl
+│   ├── hpa.yaml
+│   ├── ingress.yaml
+│   ├── NOTES.txt
+│   ├── serviceaccount.yaml
+│   ├── service.yaml
+│   └── tests
+│   └── test-connection.yaml
+└── values.yaml
+```
+
+The two main files are Chart.yaml (includes e.g., `dependencies` like mariadb image) and values.yaml (variables which can be referenced e.g., in the templates).
+
+```bash
+# once dependency is added to Charts.yaml, update it
+helm dependency update
+```
+
+Then add variables to values.yaml.
+
+Then add reference to these to templates/deployment.yaml like this.
+
+```yaml
+imagePullPolicy: {{ .Values.image.pullPolicy }}
+env:
+ {{- range .Values.env }}
+- name: {{ .name }}
+ value: {{ .value }}
+ {{- end }}
+```
+
+Then create new project first, then install with Helm.
+
+```bash
+helm install <name> .
+
+# check deployment and pod
+# then expose the service
+
+# create a template which can be reused by kustomize
+helm template <name> . > base/deployment.yaml
+
+# then create kustomization.yaml in base dir as explained below
+```
+
+### Kustomize
+
+```bash
+# example Kustomize layout
+myapp
+└── base
+ ├── deployment.yaml
+ ├── kustomization.yaml
+ ├── secrets.yaml
+ └── service.yaml
+└── overlays
+ └── production
+  └── kustomize.yaml
+ └── staging
+  └── kustomize.yaml
+```
+
+An example of the base/kustomization.yaml:
+
+```yaml
+resources:
+- deployment.yaml
+- secrets.yaml
+- service.yaml
+```
+
+An example of the overlays/some_stage/kustomization.yaml:
+
+```yaml
+resources:
+bases:
+- ../../base
+patches:
+- replica_limits.yaml
+```
+
+Apply kustomization
+
+```bash
+oc apply -k myapp/base
+
+oc apply -k myapp/overlays/staging
+```
 
 ## New App
 
